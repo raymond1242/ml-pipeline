@@ -4,3 +4,6 @@ scikit-learn
 mlflow
 optuna
 xgboost
+lightgbm
+catboost
+joblib
