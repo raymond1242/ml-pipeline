@@ -6,6 +6,8 @@ in cross-/up-selling campaigns. Trains a binary classifier
 and a generalization-decay constraint, and produces a pipe-delimited
 replica file ready for S3, Athena, and on-premise consumers.
 
+**Repository:** <https://github.com/raymond1242/ml-pipeline>
+
 ## Pipeline overview
 
 ```
