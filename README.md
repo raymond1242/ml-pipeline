@@ -59,6 +59,23 @@ data/replica/            # stage 4 output
   brew install libomp
   ```
 
+### Training data
+
+The `train_data/` folder is **not committed to the repo** (the CSVs are too
+large). Download the partition files (`p1_extrac.csv`, `p2_extrac.csv`, ...)
+from the class shared drive and place them under `train_data/`:
+
+[Google Drive — class dataset](https://drive.google.com/drive/folders/1ViWZBI7Gt5TTSeNTxL5x8EM4ARCi0Ulf?usp=share_link)
+
+Expected layout once downloaded:
+
+```
+train_data/
+├── p1_extrac.csv
+├── p2_extrac.csv
+└── ...
+```
+
 ### Install
 
 ```bash
