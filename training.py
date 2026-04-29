@@ -41,7 +41,7 @@ def _align_columns(
 def _build_models() -> dict:
     return {
         "xgb": xgb.XGBClassifier(
-            use_label_encoder=False, eval_metric="logloss", random_state=RANDOM_STATE
+            eval_metric="logloss", random_state=RANDOM_STATE
         ),
         "lgbm": lgb.LGBMClassifier(random_state=RANDOM_STATE),
         "catb": catb.CatBoostClassifier(verbose=0, random_state=RANDOM_STATE),

@@ -9,7 +9,7 @@ Pasos:
 
 import pandas as pd
 
-from monitoring import compute_recall_by_decile, run_monitoring
+from monitoring import run_monitoring
 from postprocessing import run_postprocessing, save_replica
 from preprocessing import MODEL_NAME, OUTPUT_DIR as PREPROCESS_DIR, run_preprocessing
 from training import TARGET_COL, auto_train
@@ -38,9 +38,8 @@ def main():
     train_scores = model.predict_proba(df_train.drop(columns=[TARGET_COL]))[:, 1]
     test_scores = model.predict_proba(df_test.drop(columns=[TARGET_COL]))[:, 1]
 
-    # 4. Monitoreo
+    # 4. Monitoreo (incluye recall por decil)
     run_monitoring(train_scores, test_scores, y_val=df_test[TARGET_COL])
-    compute_recall_by_decile(df_test[TARGET_COL], test_scores)
 
     # 5. Postprocesamiento + replica
     df_post = pd.read_csv(TEST_BUSINESS)

@@ -222,3 +222,6 @@ catboost_info/
 
 # Trained models
 models/
+
+data/
+preprocess_data/
