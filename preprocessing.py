@@ -100,7 +100,7 @@ def _encoded_categorical_cols() -> list[str]:
 
 
 def split_and_save(df: pd.DataFrame, output_dir: str, model: str = MODEL_NAME) -> None:
-    """Train/test split y guardado en preprocessed/ y postprocessed/."""
+    """Train/test split y guardado en features/ (modelo) y business/ (postproc)."""
     feature_cols = NUMERIC_COLS + _encoded_categorical_cols()
     keep_cols = list(dict.fromkeys(feature_cols + POST_COLS))
 
@@ -109,17 +109,17 @@ def split_and_save(df: pd.DataFrame, output_dir: str, model: str = MODEL_NAME) -
         test_size=TEST_SIZE, random_state=RANDOM_STATE,
     )
 
-    pre_dir = Path(output_dir) / "preprocessed"
-    post_dir = Path(output_dir) / "postprocessed"
-    pre_dir.mkdir(parents=True, exist_ok=True)
-    post_dir.mkdir(parents=True, exist_ok=True)
+    features_dir = Path(output_dir) / "features"
+    business_dir = Path(output_dir) / "business"
+    features_dir.mkdir(parents=True, exist_ok=True)
+    business_dir.mkdir(parents=True, exist_ok=True)
 
     for prefix, x, y in [("train", x_train, y_train), ("test", x_test, y_test)]:
         pd.concat([y, x[feature_cols]], axis=1).to_csv(
-            pre_dir / f"{prefix}_vars_{model}.csv", index=False,
+            features_dir / f"{prefix}_{model}.csv", index=False,
         )
         x[POST_COLS].to_csv(
-            post_dir / f"{prefix}_post_{model}.csv", index=False,
+            business_dir / f"{prefix}_{model}.csv", index=False,
         )
 
 
