@@ -1,7 +1,7 @@
 """
 postprocessing.py -- Puntuacion TLV y grupos de ejecucion.
 Formula:
-puntuacion_tlv = prob x prob_value_contact x log(monto + 1) x prob_frescura
+puntuacion_tlv = prob x prob_value x log(monto + 1) x prob_frescura
 """
 
 from datetime import datetime
@@ -26,7 +26,7 @@ def get_groups(scores, df_post):
     scores: Array con probabilidades del modelo [0, 1].
     df_post: DataFrame con columnas: grp_campecs06m,
 
-    prob_value_contact, monto.
+    prob_value, monto.
 
     Returns:
     df_post con columnas adicionales: prob, prob_frescura,
@@ -47,10 +47,10 @@ def get_groups(scores, df_post):
         ),
     )
 
-    df_post["prob_value_contact"] = df_post["prob_value_contact"].fillna(0.000001)
+    df_post["prob_value"] = df_post["prob_value"].fillna(0.000001)
     df_post["puntuacion_tlv"] = (
         df_post["prob"]
-        * df_post["prob_value_contact"]
+        * df_post["prob_value"]
         * np.log(df_post["monto"] + 1)
         * df_post["prob_frescura"]
     )
@@ -66,6 +66,7 @@ def run_postprocessing(scores, df_post, output_path=None):
     """Wrapper de get_groups con guardado opcional a CSV."""
     result = get_groups(scores, df_post)
     if output_path:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         result.to_csv(output_path, index=False)
     return result
 
@@ -100,7 +101,7 @@ def save_replica(
         "score": sorted_df["prob"],
         "orden": np.arange(1, len(sorted_df) + 1),
         "variable1": sorted_df.get("grp_campecs06m", ""),
-        "variable2": sorted_df.get("prob_value_contact", ""),
+        "variable2": sorted_df.get("prob_value", ""),
         "variable3": sorted_df.get("monto", ""),
     })[REPLICA_COLS]
 
