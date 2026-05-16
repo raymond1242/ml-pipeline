@@ -8,6 +8,7 @@ Umbrales PSI:
 """
 
 import json
+import logging
 from pathlib import Path
 
 import mlflow
@@ -16,6 +17,8 @@ import pandas as pd
 from sklearn.metrics import recall_score, roc_auc_score
 
 PSI_EPS = 1e-6
+
+logger = logging.getLogger(__name__)
 
 
 def psi_flag(psi: float) -> str:
@@ -101,7 +104,8 @@ def run_monitoring(
         mlflow.log_metric("val_auc", auc)
         mlflow.log_metric("val_recall_0.5", recall_at_05)
 
-    print(f"PSI:       {psi:.4f} ({psi_flag(psi)})")
-    print(f"AUC val:   {auc:.4f}")
-    print(f"Recall val (thr=0.5): {recall_at_05:.4f}")
+    logger.info(
+        "PSI=%.4f (%s) | AUC val=%.4f | Recall val (thr=0.5)=%.4f",
+        psi, psi_flag(psi), auc, recall_at_05,
+    )
     return metrics
