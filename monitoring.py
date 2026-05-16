@@ -52,9 +52,7 @@ def compute_recall_by_decile(y_true, scores, n_deciles: int = 10) -> pd.DataFram
         DataFrame con columnas: decil, recall_acumulado.
     """
     df = pd.DataFrame({"score": scores, "target": y_true})
-    df["decil"] = pd.qcut(
-        df["score"], q=n_deciles, labels=range(n_deciles, 0, -1)
-    )
+    df["decil"] = pd.qcut(df["score"], q=n_deciles, labels=range(n_deciles, 0, -1))
 
     total_pos = df["target"].sum()
     if total_pos == 0:
@@ -63,10 +61,12 @@ def compute_recall_by_decile(y_true, scores, n_deciles: int = 10) -> pd.DataFram
     pos_by_decile = df.groupby("decil", observed=True)["target"].sum().sort_index()
     recall = pos_by_decile.cumsum() / total_pos
 
-    return pd.DataFrame({
-        "decil": recall.index.astype(int),
-        "recall_acumulado": recall.values,
-    })
+    return pd.DataFrame(
+        {
+            "decil": recall.index.astype(int),
+            "recall_acumulado": recall.values,
+        }
+    )
 
 
 def run_monitoring(
@@ -106,6 +106,9 @@ def run_monitoring(
 
     logger.info(
         "PSI=%.4f (%s) | AUC val=%.4f | Recall val (thr=0.5)=%.4f",
-        psi, psi_flag(psi), auc, recall_at_05,
+        psi,
+        psi_flag(psi),
+        auc,
+        recall_at_05,
     )
     return metrics

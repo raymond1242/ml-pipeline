@@ -14,21 +14,28 @@ from sklearn.model_selection import train_test_split
 from config import PreprocessingConfig, SplitConfig
 
 
-def _drop_high_nan(df: pd.DataFrame, threshold: float) -> tuple[pd.DataFrame, list[str]]:
+def _drop_high_nan(
+    df: pd.DataFrame, threshold: float
+) -> tuple[pd.DataFrame, list[str]]:
     cols_drop = [c for c in df.columns if df[c].isna().mean() * 100 > threshold]
     return df.drop(columns=cols_drop), cols_drop
 
 
-def _numeric_feature_cols(df: pd.DataFrame, target_col: str, post_cols: list[str]) -> list[str]:
+def _numeric_feature_cols(
+    df: pd.DataFrame, target_col: str, post_cols: list[str]
+) -> list[str]:
     excluded = {target_col, *post_cols}
     return [
-        c for c in df.columns
+        c
+        for c in df.columns
         if c not in excluded and pd.api.types.is_numeric_dtype(df[c])
     ]
 
 
 def process_vars(
-    df: pd.DataFrame, target_col: str, prep_cfg: PreprocessingConfig,
+    df: pd.DataFrame,
+    target_col: str,
+    prep_cfg: PreprocessingConfig,
 ) -> pd.DataFrame:
     """Normaliza nulls y castea numericas a float32."""
     df = df.replace(prep_cfg.na_tokens, np.nan)

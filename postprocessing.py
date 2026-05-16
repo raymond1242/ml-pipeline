@@ -11,9 +11,18 @@ import numpy as np
 import pandas as pd
 
 REPLICA_COLS = [
-    "codmes", "tipdoc", "coddoc", "puntuacion", "modelo",
-    "fec_replica", "grupo_ejec", "score", "orden",
-    "variable1", "variable2", "variable3",
+    "codmes",
+    "tipdoc",
+    "coddoc",
+    "puntuacion",
+    "modelo",
+    "fec_replica",
+    "grupo_ejec",
+    "score",
+    "orden",
+    "variable1",
+    "variable2",
+    "variable3",
 ]
 
 DIST_GE = [0, 0.035, 0.087, 0.237, 0.393, 0.529, 0.664, 0.787, 0.862, 0.95, 1.0]
@@ -85,25 +94,27 @@ def save_replica(
               fec_replica | grupo_ejec | score | orden |
               variable1 | variable2 | variable3
     """
-    sorted_df = df_post.sort_values(
-        "puntuacion_tlv", ascending=False
-    ).reset_index(drop=True)
+    sorted_df = df_post.sort_values("puntuacion_tlv", ascending=False).reset_index(
+        drop=True
+    )
     fec_replica = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    replica = pd.DataFrame({
-        "codmes": partition,
-        "tipdoc": "DNI",
-        "coddoc": sorted_df["key_value"],
-        "puntuacion": sorted_df["puntuacion_tlv"],
-        "modelo": table,
-        "fec_replica": fec_replica,
-        "grupo_ejec": sorted_df["grupo_ejec_tlv"],
-        "score": sorted_df["prob"],
-        "orden": np.arange(1, len(sorted_df) + 1),
-        "variable1": sorted_df.get("grp_campecs06m", ""),
-        "variable2": sorted_df.get("prob_value", ""),
-        "variable3": sorted_df.get("monto", ""),
-    })[REPLICA_COLS]
+    replica = pd.DataFrame(
+        {
+            "codmes": partition,
+            "tipdoc": "DNI",
+            "coddoc": sorted_df["key_value"],
+            "puntuacion": sorted_df["puntuacion_tlv"],
+            "modelo": table,
+            "fec_replica": fec_replica,
+            "grupo_ejec": sorted_df["grupo_ejec_tlv"],
+            "score": sorted_df["prob"],
+            "orden": np.arange(1, len(sorted_df) + 1),
+            "variable1": sorted_df.get("grp_campecs06m", ""),
+            "variable2": sorted_df.get("prob_value", ""),
+            "variable3": sorted_df.get("monto", ""),
+        }
+    )[REPLICA_COLS]
 
     filename = f"replica_{table}_{partition}.txt"
     for d in (dir_s3, dir_athena, dir_onpremise):

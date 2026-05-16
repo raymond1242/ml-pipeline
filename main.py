@@ -29,7 +29,8 @@ logger = logging.getLogger(__name__)
 def _feature_cols(df: pd.DataFrame, target_col: str, post_cols: list[str]) -> list[str]:
     excluded = {target_col, *post_cols}
     return [
-        c for c in df.columns
+        c
+        for c in df.columns
         if c not in excluded and pd.api.types.is_numeric_dtype(df[c])
     ]
 
@@ -70,7 +71,8 @@ def main():
 
     # 4. Monitoreo (incluye recall por decil)
     run_monitoring(
-        train_scores, val_scores,
+        train_scores,
+        val_scores,
         y_val=df_val[cfg.target_col],
         output_dir=cfg.monitoring.output_dir,
     )
@@ -78,7 +80,9 @@ def main():
     # 5. Postprocesamiento + replica
     df_post = df_val[cfg.preprocessing.post_cols].copy()
     df_resultado = run_postprocessing(
-        val_scores, df_post, cfg.postprocessing.tlv_output,
+        val_scores,
+        df_post,
+        cfg.postprocessing.tlv_output,
     )
     save_replica(
         df_resultado,

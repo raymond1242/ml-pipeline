@@ -86,7 +86,9 @@ def _space_catb(trial: optuna.Trial) -> dict:
 SEARCH_SPACES = {"xgb": _space_xgb, "lgbm": _space_lgbm, "catb": _space_catb}
 
 
-def _make_model(name: str, tuned_params: dict, train_cfg: TrainingConfig, random_state: int):
+def _make_model(
+    name: str, tuned_params: dict, train_cfg: TrainingConfig, random_state: int
+):
     """Construye un modelo con base params + hiperparams del tuning."""
     if name == "xgb":
         return xgb.XGBClassifier(
@@ -116,14 +118,21 @@ def _make_model(name: str, tuned_params: dict, train_cfg: TrainingConfig, random
 
 
 def _fit_with_early_stopping(
-    name: str, model, X_tr, y_tr, X_es, y_es, early_stopping_rounds: int,
+    name: str,
+    model,
+    X_tr,
+    y_tr,
+    X_es,
+    y_es,
+    early_stopping_rounds: int,
 ) -> None:
     """Fit con early stopping; dispatch por libreria (firmas distintas)."""
     if name == "xgb":
         model.fit(X_tr, y_tr, eval_set=[(X_es, y_es)], verbose=False)
     elif name == "lgbm":
         model.fit(
-            X_tr, y_tr,
+            X_tr,
+            y_tr,
             eval_set=[(X_es, y_es)],
             eval_metric="auc",
             callbacks=[lgb.early_stopping(early_stopping_rounds, verbose=False)],
@@ -145,12 +154,18 @@ def _best_iteration(name: str, model) -> int | None:
 
 
 def _cv_score(
-    name: str, params: dict, X: pd.DataFrame, y: pd.Series,
-    train_cfg: TrainingConfig, split_cfg: SplitConfig,
+    name: str,
+    params: dict,
+    X: pd.DataFrame,
+    y: pd.Series,
+    train_cfg: TrainingConfig,
+    split_cfg: SplitConfig,
 ) -> float:
     """Mean AUC en K-fold estratificado con early stopping intra-fold."""
     skf = StratifiedKFold(
-        n_splits=split_cfg.cv_folds, shuffle=True, random_state=split_cfg.random_state,
+        n_splits=split_cfg.cv_folds,
+        shuffle=True,
+        random_state=split_cfg.random_state,
     )
     aucs = []
     for tr_idx, va_idx in skf.split(X, y):
@@ -158,20 +173,31 @@ def _cv_score(
         y_tr, y_va = y.iloc[tr_idx], y.iloc[va_idx]
         model = _make_model(name, params, train_cfg, split_cfg.random_state)
         _fit_with_early_stopping(
-            name, model, X_tr, y_tr, X_va, y_va, train_cfg.early_stopping_rounds,
+            name,
+            model,
+            X_tr,
+            y_tr,
+            X_va,
+            y_va,
+            train_cfg.early_stopping_rounds,
         )
         aucs.append(roc_auc_score(y_va, model.predict_proba(X_va)[:, 1]))
     return float(np.mean(aucs))
 
 
 def _tune(
-    name: str, X: pd.DataFrame, y: pd.Series,
-    train_cfg: TrainingConfig, split_cfg: SplitConfig,
+    name: str,
+    X: pd.DataFrame,
+    y: pd.Series,
+    train_cfg: TrainingConfig,
+    split_cfg: SplitConfig,
 ) -> tuple[dict, float]:
     """Corre Optuna y devuelve (best_params, best_cv_auc)."""
     sampler = optuna.samplers.TPESampler(seed=split_cfg.random_state)
     study = optuna.create_study(
-        direction="maximize", sampler=sampler, pruner=MedianPruner(),
+        direction="maximize",
+        sampler=sampler,
+        pruner=MedianPruner(),
     )
     study.optimize(
         lambda t: _cv_score(name, SEARCH_SPACES[name](t), X, y, train_cfg, split_cfg),
@@ -183,29 +209,45 @@ def _tune(
 
 def _train_one(
     name: str,
-    X_train: pd.DataFrame, y_train: pd.Series,
-    X_tr: pd.DataFrame, y_tr: pd.Series,
-    X_es: pd.DataFrame, y_es: pd.Series,
-    X_test: pd.DataFrame, y_test: pd.Series,
-    train_cfg: TrainingConfig, split_cfg: SplitConfig,
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    X_tr: pd.DataFrame,
+    y_tr: pd.Series,
+    X_es: pd.DataFrame,
+    y_es: pd.Series,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+    train_cfg: TrainingConfig,
+    split_cfg: SplitConfig,
 ) -> dict:
     """Tuning con Optuna + refit final + metricas."""
     logger.info(
         "Tuning %s con Optuna (%d trials, %d-fold CV)...",
-        name, train_cfg.optuna_trials, split_cfg.cv_folds,
+        name,
+        train_cfg.optuna_trials,
+        split_cfg.cv_folds,
     )
     tune_start = time.time()
     best_params, cv_auc = _tune(name, X_train, y_train, train_cfg, split_cfg)
     tune_elapsed = time.time() - tune_start
     logger.info(
         "  %s tuning: CV AUC=%.4f en %.1fs | params=%s",
-        name, cv_auc, tune_elapsed, best_params,
+        name,
+        cv_auc,
+        tune_elapsed,
+        best_params,
     )
 
     model = _make_model(name, best_params, train_cfg, split_cfg.random_state)
     fit_start = time.time()
     _fit_with_early_stopping(
-        name, model, X_tr, y_tr, X_es, y_es, train_cfg.early_stopping_rounds,
+        name,
+        model,
+        X_tr,
+        y_tr,
+        X_es,
+        y_es,
+        train_cfg.early_stopping_rounds,
     )
     fit_elapsed = time.time() - fit_start
 
@@ -218,7 +260,12 @@ def _train_one(
 
     logger.info(
         "Model %s | AUC train=%.4f test=%.4f | decay=%.2f%% | best_iter=%s | fit=%.2fs",
-        name, auc_train, auc_test, decay_pct, best_iter, fit_elapsed,
+        name,
+        auc_train,
+        auc_test,
+        decay_pct,
+        best_iter,
+        fit_elapsed,
     )
 
     return {
@@ -240,7 +287,8 @@ def _train_one(
 def _pick_champion(results: dict, decay_max_pct: float) -> str | None:
     """Mejor AUC test entre los modelos cuyo decay sea aceptable."""
     eligible = {
-        n: r for n, r in results.items()
+        n: r
+        for n, r in results.items()
         if r["performance"]["decay_percent"] < decay_max_pct
     }
     if not eligible:
@@ -274,7 +322,11 @@ def _library_versions() -> dict:
 
 
 def save_model(
-    model, name: str, performance: dict, params: dict, save_dir: Path,
+    model,
+    name: str,
+    performance: dict,
+    params: dict,
+    save_dir: Path,
     tuned_params: dict | None = None,
 ) -> None:
     """Guarda el modelo (joblib) y la metadata (JSON) en save_dir."""
@@ -311,7 +363,9 @@ def auto_train(
     Returns:
         (champion_name, champion_result) o None si ninguno cumple el umbral.
     """
-    save_dir = Path(train_cfg.model_save_dir) / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    save_dir = Path(train_cfg.model_save_dir) / datetime.now().strftime(
+        "%Y-%m-%d_%H-%M-%S"
+    )
     logger.info("Directorio de modelos: %s", save_dir)
 
     X_train, y_train = _xy(train_df, target_col)
@@ -319,7 +373,8 @@ def auto_train(
     X_train, X_test = _align_columns(X_train, X_test)
 
     X_tr, X_es, y_tr, y_es = train_test_split(
-        X_train, y_train,
+        X_train,
+        y_train,
         test_size=split_cfg.internal_val_size,
         stratify=y_train,
         random_state=split_cfg.random_state,
@@ -327,8 +382,17 @@ def auto_train(
 
     results = {
         name: _train_one(
-            name, X_train, y_train, X_tr, y_tr, X_es, y_es, X_test, y_test,
-            train_cfg, split_cfg,
+            name,
+            X_train,
+            y_train,
+            X_tr,
+            y_tr,
+            X_es,
+            y_es,
+            X_test,
+            y_test,
+            train_cfg,
+            split_cfg,
         )
         for name in SEARCH_SPACES
     }
@@ -336,7 +400,8 @@ def auto_train(
     champion = _pick_champion(results, train_cfg.decay_max_pct)
     if champion is None:
         logger.warning(
-            "No se encontro modelo campeon (decay < %s%%).", train_cfg.decay_max_pct,
+            "No se encontro modelo campeon (decay < %s%%).",
+            train_cfg.decay_max_pct,
         )
         return None
 
@@ -364,6 +429,9 @@ if __name__ == "__main__":
         split_cfg=cfg.split,
     )
     auto_train(
-        train_df=df_train, test_df=df_test, target_col=cfg.target_col,
-        train_cfg=cfg.training, split_cfg=cfg.split,
+        train_df=df_train,
+        test_df=df_test,
+        target_col=cfg.target_col,
+        train_cfg=cfg.training,
+        split_cfg=cfg.split,
     )
