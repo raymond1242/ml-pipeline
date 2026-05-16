@@ -1,9 +1,11 @@
 """
-training.py -- Entrena XGBoost, LightGBM y CatBoost; selecciona el campeon
-por AUC test con decay (train-test) bajo umbral; guarda modelo + metadata.
+training.py -- Entrena XGBoost, LightGBM y CatBoost con tuning de
+hiperparametros via Optuna (CV estratificado). Selecciona el campeon por
+AUC test con decay (train-test) bajo umbral; guarda modelo + metadata.
 """
 
 import json
+import logging
 import platform
 import time
 from datetime import datetime
@@ -13,14 +15,25 @@ import catboost as catb
 import joblib
 import lightgbm as lgb
 import numpy as np
+import optuna
 import pandas as pd
 import sklearn
 import xgboost as xgb
+from optuna.pruners import MedianPruner
 from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import StratifiedKFold, train_test_split
 
 TARGET_COL = "target"
 RANDOM_STATE = 42
 DECAY_MAX_PCT = 10.0  # umbral de generalizacion (train vs test)
+INTERNAL_VAL_SIZE = 0.15  # slice del train para early stopping del refit
+EARLY_STOPPING_ROUNDS = 50
+MAX_ROUNDS = 2000  # techo alto; early stopping decide cuando parar
+OPTUNA_TRIALS = 30
+CV_FOLDS = 3
+
+logger = logging.getLogger(__name__)
+optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
 def _xy(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
@@ -38,44 +51,177 @@ def _align_columns(
     return X_train, X_test[X_train.columns]
 
 
-def _build_models() -> dict:
+def _space_xgb(trial: optuna.Trial) -> dict:
     return {
-        "xgb": xgb.XGBClassifier(
-            eval_metric="logloss", random_state=RANDOM_STATE
-        ),
-        "lgbm": lgb.LGBMClassifier(random_state=RANDOM_STATE),
-        "catb": catb.CatBoostClassifier(verbose=0, random_state=RANDOM_STATE),
+        "max_depth": trial.suggest_int("max_depth", 3, 8),
+        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+        "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+        "min_child_weight": trial.suggest_int("min_child_weight", 1, 20),
+        "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
+        "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
+        "gamma": trial.suggest_float("gamma", 0.0, 5.0),
     }
 
 
-def _train_one(name, model, X_train, y_train, X_test, y_test) -> dict:
-    """Entrena un modelo y devuelve metricas + el modelo entrenado."""
-    start = time.time()
-    model.fit(X_train, y_train)
-    elapsed = time.time() - start
+def _space_lgbm(trial: optuna.Trial) -> dict:
+    return {
+        "max_depth": trial.suggest_int("max_depth", 3, 8),
+        "num_leaves": trial.suggest_int("num_leaves", 15, 63),
+        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+        "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+        "min_child_samples": trial.suggest_int("min_child_samples", 10, 200),
+        "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
+        "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
+    }
 
-    auc_train = roc_auc_score(y_train, model.predict_proba(X_train)[:, 1])
+
+def _space_catb(trial: optuna.Trial) -> dict:
+    return {
+        "depth": trial.suggest_int("depth", 4, 8),
+        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+        "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1.0, 20.0, log=True),
+        "bagging_temperature": trial.suggest_float("bagging_temperature", 0.0, 1.0),
+        "random_strength": trial.suggest_float("random_strength", 0.0, 5.0),
+        "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 1, 100),
+    }
+
+
+SEARCH_SPACES = {"xgb": _space_xgb, "lgbm": _space_lgbm, "catb": _space_catb}
+
+
+def _make_model(name: str, tuned_params: dict):
+    """Construye un modelo con base params + hiperparams del tuning."""
+    if name == "xgb":
+        return xgb.XGBClassifier(
+            n_estimators=MAX_ROUNDS,
+            early_stopping_rounds=EARLY_STOPPING_ROUNDS,
+            eval_metric="auc",
+            random_state=RANDOM_STATE,
+            **tuned_params,
+        )
+    if name == "lgbm":
+        return lgb.LGBMClassifier(
+            n_estimators=MAX_ROUNDS,
+            random_state=RANDOM_STATE,
+            verbose=-1,
+            **tuned_params,
+        )
+    if name == "catb":
+        return catb.CatBoostClassifier(
+            iterations=MAX_ROUNDS,
+            early_stopping_rounds=EARLY_STOPPING_ROUNDS,
+            eval_metric="AUC",
+            verbose=0,
+            random_state=RANDOM_STATE,
+            **tuned_params,
+        )
+    raise ValueError(f"Modelo desconocido: {name}")
+
+
+def _fit_with_early_stopping(
+    name: str, model, X_tr, y_tr, X_es, y_es,
+) -> None:
+    """Fit con early stopping; dispatch por libreria (firmas distintas)."""
+    if name == "xgb":
+        model.fit(X_tr, y_tr, eval_set=[(X_es, y_es)], verbose=False)
+    elif name == "lgbm":
+        model.fit(
+            X_tr, y_tr,
+            eval_set=[(X_es, y_es)],
+            eval_metric="auc",
+            callbacks=[lgb.early_stopping(EARLY_STOPPING_ROUNDS, verbose=False)],
+        )
+    elif name == "catb":
+        model.fit(X_tr, y_tr, eval_set=(X_es, y_es), verbose=False)
+    else:
+        model.fit(X_tr, y_tr)
+
+
+def _best_iteration(name: str, model) -> int | None:
+    if name == "xgb":
+        return getattr(model, "best_iteration", None)
+    if name == "lgbm":
+        return getattr(model, "best_iteration_", None)
+    if name == "catb":
+        return model.get_best_iteration()
+    return None
+
+
+def _cv_score(name: str, params: dict, X: pd.DataFrame, y: pd.Series) -> float:
+    """Mean AUC en K-fold estratificado con early stopping intra-fold."""
+    skf = StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
+    aucs = []
+    for tr_idx, va_idx in skf.split(X, y):
+        X_tr, X_va = X.iloc[tr_idx], X.iloc[va_idx]
+        y_tr, y_va = y.iloc[tr_idx], y.iloc[va_idx]
+        model = _make_model(name, params)
+        _fit_with_early_stopping(name, model, X_tr, y_tr, X_va, y_va)
+        aucs.append(roc_auc_score(y_va, model.predict_proba(X_va)[:, 1]))
+    return float(np.mean(aucs))
+
+
+def _tune(name: str, X: pd.DataFrame, y: pd.Series) -> tuple[dict, float]:
+    """Corre Optuna y devuelve (best_params, best_cv_auc)."""
+    sampler = optuna.samplers.TPESampler(seed=RANDOM_STATE)
+    study = optuna.create_study(
+        direction="maximize", sampler=sampler, pruner=MedianPruner(),
+    )
+    study.optimize(
+        lambda t: _cv_score(name, SEARCH_SPACES[name](t), X, y),
+        n_trials=OPTUNA_TRIALS,
+        show_progress_bar=False,
+    )
+    return study.best_params, study.best_value
+
+
+def _train_one(
+    name: str,
+    X_train: pd.DataFrame, y_train: pd.Series,
+    X_tr: pd.DataFrame, y_tr: pd.Series,
+    X_es: pd.DataFrame, y_es: pd.Series,
+    X_test: pd.DataFrame, y_test: pd.Series,
+) -> dict:
+    """Tuning con Optuna + refit final + metricas."""
+    logger.info("Tuning %s con Optuna (%d trials, %d-fold CV)...",
+                name, OPTUNA_TRIALS, CV_FOLDS)
+    tune_start = time.time()
+    best_params, cv_auc = _tune(name, X_train, y_train)
+    tune_elapsed = time.time() - tune_start
+    logger.info("  %s tuning: CV AUC=%.4f en %.1fs | params=%s",
+                name, cv_auc, tune_elapsed, best_params)
+
+    model = _make_model(name, best_params)
+    fit_start = time.time()
+    _fit_with_early_stopping(name, model, X_tr, y_tr, X_es, y_es)
+    fit_elapsed = time.time() - fit_start
+
+    auc_train = roc_auc_score(y_tr, model.predict_proba(X_tr)[:, 1])
     auc_test = roc_auc_score(y_test, model.predict_proba(X_test)[:, 1])
     decay_pct = (
         ((auc_train - auc_test) / auc_train) * 100 if auc_train > 0 else float("inf")
     )
+    best_iter = _best_iteration(name, model)
 
-    print(f"Model: {name}")
-    print(f"  AUC Train: {auc_train:.4f}")
-    print(f"  AUC Test:  {auc_test:.4f}")
-    print(f"  Decay (%): {decay_pct:.2f}")
-    print(f"  Time (s):  {elapsed:.2f}")
-    print("-" * 30)
+    logger.info(
+        "Model %s | AUC train=%.4f test=%.4f | decay=%.2f%% | best_iter=%s | fit=%.2fs",
+        name, auc_train, auc_test, decay_pct, best_iter, fit_elapsed,
+    )
 
     return {
         "model": model,
         "performance": {
             "auc_train": auc_train,
             "auc_test": auc_test,
+            "cv_auc": cv_auc,
             "decay_percent": decay_pct,
-            "training_time_segs": elapsed,
+            "training_time_segs": fit_elapsed,
+            "tuning_time_segs": tune_elapsed,
+            "best_iteration": best_iter,
         },
         "params": model.get_params(),
+        "tuned_params": best_params,
     }
 
 
@@ -108,6 +254,7 @@ def _library_versions() -> dict:
         "lightgbm": lgb.__version__,
         "catboost": catb.__version__,
         "scikit-learn": sklearn.__version__,
+        "optuna": optuna.__version__,
         "pandas": pd.__version__,
         "numpy": np.__version__,
         "python": platform.python_version(),
@@ -115,7 +262,8 @@ def _library_versions() -> dict:
 
 
 def save_model(
-    model, name: str, performance: dict, params: dict, save_dir: Path
+    model, name: str, performance: dict, params: dict, save_dir: Path,
+    tuned_params: dict | None = None,
 ) -> None:
     """Guarda el modelo (joblib) y la metadata (JSON) en save_dir."""
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -123,62 +271,71 @@ def save_model(
     metadata_path = save_dir / f"{name}_metadata.json"
 
     joblib.dump(model, model_path)
-    print(f"Modelo guardado en:   {model_path}")
+    logger.info("Modelo guardado en: %s", model_path)
 
     metadata = {
         "ml_name": name,
         "performance": performance,
-        "hyperparameters": _clean_for_json(params),
+        "tuned_hyperparameters": tuned_params or {},
+        "all_hyperparameters": _clean_for_json(params),
         "library_versions": _library_versions(),
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
     }
     metadata_path.write_text(json.dumps(metadata, indent=4))
-    print(f"Metadata guardada en: {metadata_path}")
+    logger.info("Metadata guardada en: %s", metadata_path)
 
 
 def auto_train(
-    train_path: str,
-    test_path: str,
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
     model_save_dir: str = "models",
     decay_max_pct: float = DECAY_MAX_PCT,
 ):
     """
-    Entrena XGB, LGBM y CatBoost; elige el campeon con mayor AUC test
-    cuyo decay (train vs test) sea menor que decay_max_pct.
+    Tuning con Optuna (CV) por modelo + refit con early stopping.
+    Elige el campeon con mayor AUC test cuyo decay sea menor que decay_max_pct.
 
     Returns:
         (champion_name, champion_result) o None si ninguno cumple el umbral.
     """
     save_dir = Path(model_save_dir) / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    print(f"Directorio de modelos: {save_dir}\n")
+    logger.info("Directorio de modelos: %s", save_dir)
 
-    X_train, y_train = _xy(pd.read_csv(train_path))
-    X_test, y_test = _xy(pd.read_csv(test_path))
+    X_train, y_train = _xy(train_df)
+    X_test, y_test = _xy(test_df)
     X_train, X_test = _align_columns(X_train, X_test)
 
+    X_tr, X_es, y_tr, y_es = train_test_split(
+        X_train, y_train,
+        test_size=INTERNAL_VAL_SIZE,
+        stratify=y_train,
+        random_state=RANDOM_STATE,
+    )
+
     results = {
-        name: _train_one(name, model, X_train, y_train, X_test, y_test)
-        for name, model in _build_models().items()
+        name: _train_one(name, X_train, y_train, X_tr, y_tr, X_es, y_es, X_test, y_test)
+        for name in SEARCH_SPACES
     }
 
     champion = _pick_champion(results, decay_max_pct)
     if champion is None:
-        print(f"\nNo se encontro modelo campeon (decay < {decay_max_pct}%).")
+        logger.warning("No se encontro modelo campeon (decay < %s%%).", decay_max_pct)
         return None
 
-    print(f"\nModelo finalista: {champion}")
+    logger.info("Modelo finalista: %s", champion)
     save_model(
         results[champion]["model"],
         champion,
         results[champion]["performance"],
         results[champion]["params"],
         save_dir,
+        tuned_params=results[champion]["tuned_params"],
     )
     return champion, results[champion]
 
 
 if __name__ == "__main__":
-    auto_train(
-        train_path="preprocess_data/preprocessed/train_vars_extrac.csv",
-        test_path="preprocess_data/preprocessed/test_vars_extrac.csv",
-    )
+    from preprocessing import run_preprocessing
+
+    df_train, df_test, _, _ = run_preprocessing()
+    auto_train(train_df=df_train, test_df=df_test)
