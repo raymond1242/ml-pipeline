@@ -1,7 +1,9 @@
 """
-training.py -- Entrena XGBoost, LightGBM y CatBoost con tuning de
-hiperparametros via Optuna (CV estratificado). Selecciona el campeon por
-AUC test con decay (train-test) bajo umbral; guarda modelo + metadata.
+training.py -- Tuning de hiperparametros via Optuna (CV estratificado) +
+refit con early stopping. Selecciona el campeon por AUC test con decay
+(train-test) bajo umbral; guarda modelo + metadata.
+
+Recibe la configuracion inyectada (no usa globals).
 """
 
 import json
@@ -23,21 +25,14 @@ from optuna.pruners import MedianPruner
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedKFold, train_test_split
 
-TARGET_COL = "target"
-RANDOM_STATE = 42
-DECAY_MAX_PCT = 10.0  # umbral de generalizacion (train vs test)
-INTERNAL_VAL_SIZE = 0.15  # slice del train para early stopping del refit
-EARLY_STOPPING_ROUNDS = 50
-MAX_ROUNDS = 2000  # techo alto; early stopping decide cuando parar
-OPTUNA_TRIALS = 30
-CV_FOLDS = 3
+from config import SplitConfig, TrainingConfig
 
 logger = logging.getLogger(__name__)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
-def _xy(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
-    return df.drop(columns=[TARGET_COL]), df[TARGET_COL]
+def _xy(df: pd.DataFrame, target_col: str) -> tuple[pd.DataFrame, pd.Series]:
+    return df.drop(columns=[target_col]), df[target_col]
 
 
 def _align_columns(
@@ -91,37 +86,37 @@ def _space_catb(trial: optuna.Trial) -> dict:
 SEARCH_SPACES = {"xgb": _space_xgb, "lgbm": _space_lgbm, "catb": _space_catb}
 
 
-def _make_model(name: str, tuned_params: dict):
+def _make_model(name: str, tuned_params: dict, train_cfg: TrainingConfig, random_state: int):
     """Construye un modelo con base params + hiperparams del tuning."""
     if name == "xgb":
         return xgb.XGBClassifier(
-            n_estimators=MAX_ROUNDS,
-            early_stopping_rounds=EARLY_STOPPING_ROUNDS,
+            n_estimators=train_cfg.max_rounds,
+            early_stopping_rounds=train_cfg.early_stopping_rounds,
             eval_metric="auc",
-            random_state=RANDOM_STATE,
+            random_state=random_state,
             **tuned_params,
         )
     if name == "lgbm":
         return lgb.LGBMClassifier(
-            n_estimators=MAX_ROUNDS,
-            random_state=RANDOM_STATE,
+            n_estimators=train_cfg.max_rounds,
+            random_state=random_state,
             verbose=-1,
             **tuned_params,
         )
     if name == "catb":
         return catb.CatBoostClassifier(
-            iterations=MAX_ROUNDS,
-            early_stopping_rounds=EARLY_STOPPING_ROUNDS,
+            iterations=train_cfg.max_rounds,
+            early_stopping_rounds=train_cfg.early_stopping_rounds,
             eval_metric="AUC",
             verbose=0,
-            random_state=RANDOM_STATE,
+            random_state=random_state,
             **tuned_params,
         )
     raise ValueError(f"Modelo desconocido: {name}")
 
 
 def _fit_with_early_stopping(
-    name: str, model, X_tr, y_tr, X_es, y_es,
+    name: str, model, X_tr, y_tr, X_es, y_es, early_stopping_rounds: int,
 ) -> None:
     """Fit con early stopping; dispatch por libreria (firmas distintas)."""
     if name == "xgb":
@@ -131,7 +126,7 @@ def _fit_with_early_stopping(
             X_tr, y_tr,
             eval_set=[(X_es, y_es)],
             eval_metric="auc",
-            callbacks=[lgb.early_stopping(EARLY_STOPPING_ROUNDS, verbose=False)],
+            callbacks=[lgb.early_stopping(early_stopping_rounds, verbose=False)],
         )
     elif name == "catb":
         model.fit(X_tr, y_tr, eval_set=(X_es, y_es), verbose=False)
@@ -149,28 +144,38 @@ def _best_iteration(name: str, model) -> int | None:
     return None
 
 
-def _cv_score(name: str, params: dict, X: pd.DataFrame, y: pd.Series) -> float:
+def _cv_score(
+    name: str, params: dict, X: pd.DataFrame, y: pd.Series,
+    train_cfg: TrainingConfig, split_cfg: SplitConfig,
+) -> float:
     """Mean AUC en K-fold estratificado con early stopping intra-fold."""
-    skf = StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
+    skf = StratifiedKFold(
+        n_splits=split_cfg.cv_folds, shuffle=True, random_state=split_cfg.random_state,
+    )
     aucs = []
     for tr_idx, va_idx in skf.split(X, y):
         X_tr, X_va = X.iloc[tr_idx], X.iloc[va_idx]
         y_tr, y_va = y.iloc[tr_idx], y.iloc[va_idx]
-        model = _make_model(name, params)
-        _fit_with_early_stopping(name, model, X_tr, y_tr, X_va, y_va)
+        model = _make_model(name, params, train_cfg, split_cfg.random_state)
+        _fit_with_early_stopping(
+            name, model, X_tr, y_tr, X_va, y_va, train_cfg.early_stopping_rounds,
+        )
         aucs.append(roc_auc_score(y_va, model.predict_proba(X_va)[:, 1]))
     return float(np.mean(aucs))
 
 
-def _tune(name: str, X: pd.DataFrame, y: pd.Series) -> tuple[dict, float]:
+def _tune(
+    name: str, X: pd.DataFrame, y: pd.Series,
+    train_cfg: TrainingConfig, split_cfg: SplitConfig,
+) -> tuple[dict, float]:
     """Corre Optuna y devuelve (best_params, best_cv_auc)."""
-    sampler = optuna.samplers.TPESampler(seed=RANDOM_STATE)
+    sampler = optuna.samplers.TPESampler(seed=split_cfg.random_state)
     study = optuna.create_study(
         direction="maximize", sampler=sampler, pruner=MedianPruner(),
     )
     study.optimize(
-        lambda t: _cv_score(name, SEARCH_SPACES[name](t), X, y),
-        n_trials=OPTUNA_TRIALS,
+        lambda t: _cv_score(name, SEARCH_SPACES[name](t), X, y, train_cfg, split_cfg),
+        n_trials=train_cfg.optuna_trials,
         show_progress_bar=False,
     )
     return study.best_params, study.best_value
@@ -182,19 +187,26 @@ def _train_one(
     X_tr: pd.DataFrame, y_tr: pd.Series,
     X_es: pd.DataFrame, y_es: pd.Series,
     X_test: pd.DataFrame, y_test: pd.Series,
+    train_cfg: TrainingConfig, split_cfg: SplitConfig,
 ) -> dict:
     """Tuning con Optuna + refit final + metricas."""
-    logger.info("Tuning %s con Optuna (%d trials, %d-fold CV)...",
-                name, OPTUNA_TRIALS, CV_FOLDS)
+    logger.info(
+        "Tuning %s con Optuna (%d trials, %d-fold CV)...",
+        name, train_cfg.optuna_trials, split_cfg.cv_folds,
+    )
     tune_start = time.time()
-    best_params, cv_auc = _tune(name, X_train, y_train)
+    best_params, cv_auc = _tune(name, X_train, y_train, train_cfg, split_cfg)
     tune_elapsed = time.time() - tune_start
-    logger.info("  %s tuning: CV AUC=%.4f en %.1fs | params=%s",
-                name, cv_auc, tune_elapsed, best_params)
+    logger.info(
+        "  %s tuning: CV AUC=%.4f en %.1fs | params=%s",
+        name, cv_auc, tune_elapsed, best_params,
+    )
 
-    model = _make_model(name, best_params)
+    model = _make_model(name, best_params, train_cfg, split_cfg.random_state)
     fit_start = time.time()
-    _fit_with_early_stopping(name, model, X_tr, y_tr, X_es, y_es)
+    _fit_with_early_stopping(
+        name, model, X_tr, y_tr, X_es, y_es, train_cfg.early_stopping_rounds,
+    )
     fit_elapsed = time.time() - fit_start
 
     auc_train = roc_auc_score(y_tr, model.predict_proba(X_tr)[:, 1])
@@ -288,8 +300,9 @@ def save_model(
 def auto_train(
     train_df: pd.DataFrame,
     test_df: pd.DataFrame,
-    model_save_dir: str = "models",
-    decay_max_pct: float = DECAY_MAX_PCT,
+    target_col: str,
+    train_cfg: TrainingConfig,
+    split_cfg: SplitConfig,
 ):
     """
     Tuning con Optuna (CV) por modelo + refit con early stopping.
@@ -298,28 +311,33 @@ def auto_train(
     Returns:
         (champion_name, champion_result) o None si ninguno cumple el umbral.
     """
-    save_dir = Path(model_save_dir) / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    save_dir = Path(train_cfg.model_save_dir) / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     logger.info("Directorio de modelos: %s", save_dir)
 
-    X_train, y_train = _xy(train_df)
-    X_test, y_test = _xy(test_df)
+    X_train, y_train = _xy(train_df, target_col)
+    X_test, y_test = _xy(test_df, target_col)
     X_train, X_test = _align_columns(X_train, X_test)
 
     X_tr, X_es, y_tr, y_es = train_test_split(
         X_train, y_train,
-        test_size=INTERNAL_VAL_SIZE,
+        test_size=split_cfg.internal_val_size,
         stratify=y_train,
-        random_state=RANDOM_STATE,
+        random_state=split_cfg.random_state,
     )
 
     results = {
-        name: _train_one(name, X_train, y_train, X_tr, y_tr, X_es, y_es, X_test, y_test)
+        name: _train_one(
+            name, X_train, y_train, X_tr, y_tr, X_es, y_es, X_test, y_test,
+            train_cfg, split_cfg,
+        )
         for name in SEARCH_SPACES
     }
 
-    champion = _pick_champion(results, decay_max_pct)
+    champion = _pick_champion(results, train_cfg.decay_max_pct)
     if champion is None:
-        logger.warning("No se encontro modelo campeon (decay < %s%%).", decay_max_pct)
+        logger.warning(
+            "No se encontro modelo campeon (decay < %s%%).", train_cfg.decay_max_pct,
+        )
         return None
 
     logger.info("Modelo finalista: %s", champion)
@@ -335,7 +353,17 @@ def auto_train(
 
 
 if __name__ == "__main__":
+    from config import load_config
     from preprocessing import run_preprocessing
 
-    df_train, df_test, _, _ = run_preprocessing()
-    auto_train(train_df=df_train, test_df=df_test)
+    cfg = load_config()
+    df_train, df_test, _, _ = run_preprocessing(
+        data_path=cfg.input_path,
+        target_col=cfg.target_col,
+        prep_cfg=cfg.preprocessing,
+        split_cfg=cfg.split,
+    )
+    auto_train(
+        train_df=df_train, test_df=df_test, target_col=cfg.target_col,
+        train_cfg=cfg.training, split_cfg=cfg.split,
+    )
