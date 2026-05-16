@@ -1,0 +1,39 @@
+input_path: data/raw/Data_CU_venta.csv
+target_col: target
+
+preprocessing:
+  nan_threshold: 80
+  na_fill_numeric: -9999999
+  na_tokens: ["", "null", "None"]
+  float_decimals: 4
+  post_cols:
+    - p_codmes
+    - key_value
+    - grp_campecs06m
+    - prob_value
+    - monto
+
+split:
+  validation_codmes: 201912.0
+  test_size: 0.30
+  internal_val_size: 0.15
+  cv_folds: 3
+  random_state: 42
+
+training:
+  decay_max_pct: 10.0
+  early_stopping_rounds: 50
+  max_rounds: 2000
+  optuna_trials: 30
+  model_save_dir: models
+
+monitoring:
+  output_dir: data/monitoring
+
+postprocessing:
+  tlv_output: data/postprocessing/output_tlv.csv
+  replica:
+    table: EC_OMNICANAL
+    dir_s3: data/replica/s3
+    dir_athena: data/replica/athena
+    dir_onpremise: data/replica/onpremise
