@@ -1,8 +1,0 @@
-{
-  "psi_score": 0.015075651885992488,
-  "psi_flag": "OK",
-  "model_metrics_val": {
-    "auc": 0.7647263071462206,
-    "recall_at_0.5": 0.0
-  }
-}
