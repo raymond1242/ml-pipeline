@@ -100,115 +100,31 @@ The path is configurable in `config.yaml` (`input_path`).
 ```bash
 python -m venv venv
 source venv/bin/activate
-pip install pip-tools
-pip-compile requirements.in -o requirements.txt
 pip install -r requirements.txt
-```
-
-To refresh pins after editing `requirements.in`:
-
-```bash
-pip-compile --upgrade requirements.in -o requirements.txt
 ```
 
 ## Usage
 
-### End-to-end
+Run the full pipeline (~5–10 min, Optuna tuning dominates):
 
 ```bash
 python main.py
 ```
 
-Runs all four stages in order. No CLI flags — everything that's tunable
-lives in `config.yaml`. Expect ~5–10 minutes the first time (Optuna tuning
-dominates the runtime).
-
-### Per stage
-
-Each module is runnable on its own for iteration; the `__main__` block
-loads the config and calls the entry function:
+Browse experiments in the MLflow UI:
 
 ```bash
-python preprocessing.py    # exercises the preprocessing path
-python training.py         # runs preprocessing + training only
+mlflow ui --backend-store-uri sqlite:///mlflow.db   # http://localhost:5000
 ```
 
-### MLflow UI
-
-After at least one run, browse experiments, compare runs, and download
-artifacts:
+Launch the interactive dashboard:
 
 ```bash
-mlflow ui --backend-store-uri sqlite:///mlflow.db
-# then open http://localhost:5000
+streamlit run dashboard.py                          # http://localhost:8501
 ```
 
-The `--backend-store-uri` flag is required because the pipeline uses a
-SQLite backend (set in `config.yaml`); without the flag, `mlflow ui`
-defaults to a file-store backend and won't find your runs.
-
-To disable MLflow tracking entirely (faster iteration, no DB writes), set
-`mlflow.enabled: false` in `config.yaml`.
-
-### Dashboard (Streamlit)
-
-Interactive dashboard with the pipeline outputs:
-
-```bash
-streamlit run dashboard.py
-# open http://localhost:8501
-```
-
-It pulls data from the latest run (`output_tlv.csv`, `monitoring.json`,
-`recall_by_decile.csv`) and from the MLflow history. Sections:
-
-- **KPIs**: PSI, AUC val, recall, champion model.
-- **Tab "Último run"**: distribution of execution groups, score and
-  average amount per group, top-N customers by TLV score (slider).
-- **Tab "Histórico (MLflow)"**: evolution of AUC and PSI across runs,
-  full table of runs.
-- **Tab "Recall por decil"**: cumulative recall curve.
-
-The dashboard works even before the first pipeline run — it falls back
-to an informative message instead of crashing.
-
-## Stages
-
-### 1. Preprocessing — `preprocessing.py`
-
-Drops columns with too many NaNs, imputes numerics with a sentinel,
-coerces types, and splits the data into `df_train` / `df_test` /
-`df_val`. `df_val` is a true out-of-time hold-out (rows with
-`p_codmes == validation_codmes`).
-
-### 2. Training — `training.py`
-
-For each of XGBoost / LightGBM / CatBoost: tunes hyperparameters with
-Optuna (stratified CV on `df_train`), then refits with the best params
-using early stopping on an internal slice of train. `df_test` is held
-out for honest reporting.
-
-The **champion** is the model with the highest `auc_test` whose
-`decay_pct = (auc_train − auc_test) / auc_train × 100` stays under
-`decay_max_pct` — rejecting high-AUC models that overfit.
-
-Outputs `models/<timestamp>/{name}_model.pkl` + `{name}_metadata.json`.
-
-### 3. Monitoring — `monitoring.py`
-
-Computes PSI (drift), AUC and recall on `df_val`, plus cumulative recall
-by decile (lift). Writes `monitoring.json` and `recall_by_decile.csv`.
-
-### 4. Postprocessing — `postprocessing.py`
-
-Combines model probability with business signals:
-
-```
-puntuacion_tlv = prob × prob_value × log(monto + 1) × prob_frescura
-```
-
-Buckets customers into 10 execution groups (1 = highest priority) and
-writes the pipe-delimited replica file to `data/replica/{s3,athena,onpremise}/`.
+Every knob (paths, splits, hyperparams, MLflow toggle) lives in
+`config.yaml` — no CLI flags.
 
 ## Notes
 
