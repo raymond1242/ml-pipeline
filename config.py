@@ -60,6 +60,13 @@ class PostprocessingConfig:
 
 
 @dataclass(frozen=True)
+class MLflowConfig:
+    enabled: bool
+    experiment_name: str
+    tracking_uri: str
+
+
+@dataclass(frozen=True)
 class Config:
     input_path: str
     target_col: str
@@ -68,6 +75,7 @@ class Config:
     training: TrainingConfig
     monitoring: MonitoringConfig
     postprocessing: PostprocessingConfig
+    mlflow: MLflowConfig
 
 
 def load_config(path: Path | str = CONFIG_PATH) -> Config:
@@ -84,4 +92,5 @@ def load_config(path: Path | str = CONFIG_PATH) -> Config:
             tlv_output=raw["postprocessing"]["tlv_output"],
             replica=ReplicaConfig(**raw["postprocessing"]["replica"]),
         ),
+        mlflow=MLflowConfig(**raw["mlflow"]),
     )

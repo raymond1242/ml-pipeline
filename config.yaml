@@ -37,3 +37,8 @@ postprocessing:
     dir_s3: data/replica/s3
     dir_athena: data/replica/athena
     dir_onpremise: data/replica/onpremise
+
+mlflow:
+  enabled: true
+  experiment_name: cu_venta
+  tracking_uri: sqlite:///mlflow.db
