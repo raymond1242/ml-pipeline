@@ -82,18 +82,17 @@ All of these are in `.gitignore`. After cloning the repo and placing
 ### Training data
 
 The `data/raw/` folder is **not committed to the repo** (the CSV is too
-large). Download `Data_CU_venta.csv` from the class shared drive:
+large). Download it from the class shared drive in one command:
 
-[Google Drive — class dataset](https://drive.google.com/drive/folders/1ViWZBI7Gt5TTSeNTxL5x8EM4ARCi0Ulf?usp=share_link)
-
-Expected layout once downloaded:
-
-```
-data/raw/
-└── Data_CU_venta.csv
+```bash
+pip install gdown
+mkdir -p data/raw
+gdown 1QWXx0wRZzdQRyRqBfgLP-BMBhAZmLi4t -O data/raw/Data_CU_venta.csv
 ```
 
-The path is configurable in `config.yaml` (`input_path`).
+Or [grab it from Google Drive](https://drive.google.com/file/d/1QWXx0wRZzdQRyRqBfgLP-BMBhAZmLi4t/view?usp=share_link)
+manually and drop it at `data/raw/Data_CU_venta.csv`. The path is
+configurable in `config.yaml` (`input_path`).
 
 ### Install
 
@@ -130,9 +129,6 @@ Every knob (paths, splits, hyperparams, MLflow toggle) lives in
 
 - `models/<timestamp>/` accumulates one folder per training run; old runs
   are not auto-cleaned.
-- CatBoost writes a `catboost_info/` directory to the working directory
-  during training. It's a training-time artifact, safe to delete or
-  add to `.gitignore`.
 - Optuna tuning is the slowest stage (~5–10 min on a laptop CPU for the
   default 30 trials × 3 folds × 3 models). For faster iteration during
   development, drop `training.optuna_trials` in `config.yaml`.
