@@ -228,7 +228,7 @@ models/
 
 preprocess_data/
 replica/
-# monitoring/
+monitoring/
 postprocessing/
 
 # MLflow
