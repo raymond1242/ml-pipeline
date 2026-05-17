@@ -9,6 +9,41 @@ on-premise consumers.
 
 **Repository:** <https://github.com/raymond1242/ml-pipeline>
 
+## Quickstart
+
+```bash
+# 1. Clone & enter the project
+git clone https://github.com/raymond1242/ml-pipeline.git
+cd ml-pipeline
+
+# 2. (macOS only) install OpenMP for LightGBM
+brew install libomp
+
+# 3. Create venv and install dependencies
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# 4. Place the input CSV (download link below) at data/raw/Data_CU_venta.csv
+mkdir -p data/raw
+# cp /path/to/Data_CU_venta.csv data/raw/
+
+# 5. Run the full pipeline (~5–10 min — Optuna tuning dominates)
+python main.py
+
+# 6. (Optional) Browse the run in MLflow UI
+mlflow ui --backend-store-uri sqlite:///mlflow.db
+# open http://localhost:5000
+
+# 7. (Optional) Launch the interactive dashboard
+streamlit run dashboard.py
+# open http://localhost:8501
+```
+
+All output directories (`models/`, `data/{monitoring,postprocessing,
+replica}/`, `mlruns/`, `mlflow.db`) are materialized on first write — no
+manual `mkdir` needed.
+
 ## Pipeline overview
 
 ```
@@ -31,6 +66,10 @@ All four stages are orchestrated by `main.py`, which loads a single
 `config.yaml` and injects the relevant sub-config into each step.
 Stage outputs are passed in-memory between steps (no intermediate CSVs).
 
+Every run is also tracked in **MLflow** (params, metrics, the champion
+model, and the monitoring/postprocessing artifacts) so you can compare
+runs over time and download a model from any past execution.
+
 ## Project structure
 
 ```
@@ -42,19 +81,28 @@ ml-pipeline/
 ├── training.py          # Optuna tuning + early stopping + champion pick
 ├── monitoring.py        # PSI + AUC + recall-by-decile + drift
 ├── postprocessing.py    # TLV score + execution groups + replica file
+├── dashboard.py         # Streamlit dashboard (visualizes pipeline results)
 ├── requirements.in      # source dependencies
 ├── requirements.txt     # pinned (generated with pip-compile)
 └── data/raw/            # input CSV lives here
 ```
 
-Directories created by the pipeline:
+Directories and files created by the pipeline (auto-created at first
+write — you don't need to mkdir them):
 
 ```
 models/<timestamp>/        # stage 2 output (model + metadata)
 data/monitoring/           # stage 3 output (PSI, recall)
 data/postprocessing/       # stage 4 intermediate (TLV scores)
 data/replica/{s3,athena,onpremise}/   # stage 4 final replica files
+mlflow.db                  # MLflow tracking DB (SQLite)
+mlruns/                    # MLflow artifacts (model.pkl, JSON, CSVs per run)
+catboost_info/             # CatBoost training-time artifact (safe to delete)
 ```
+
+All of these are in `.gitignore`. After cloning the repo and placing
+`Data_CU_venta.csv` in `data/raw/`, you can run `python main.py` directly
+— every output directory is materialized on demand.
 
 ## Setup
 
@@ -107,7 +155,8 @@ python main.py
 ```
 
 Runs all four stages in order. No CLI flags — everything that's tunable
-lives in `config.yaml`.
+lives in `config.yaml`. Expect ~5–10 minutes the first time (Optuna tuning
+dominates the runtime).
 
 ### Per stage
 
@@ -118,6 +167,45 @@ loads the config and calls the entry function:
 python preprocessing.py    # exercises the preprocessing path
 python training.py         # runs preprocessing + training only
 ```
+
+### MLflow UI
+
+After at least one run, browse experiments, compare runs, and download
+artifacts:
+
+```bash
+mlflow ui --backend-store-uri sqlite:///mlflow.db
+# then open http://localhost:5000
+```
+
+The `--backend-store-uri` flag is required because the pipeline uses a
+SQLite backend (set in `config.yaml`); without the flag, `mlflow ui`
+defaults to a file-store backend and won't find your runs.
+
+To disable MLflow tracking entirely (faster iteration, no DB writes), set
+`mlflow.enabled: false` in `config.yaml`.
+
+### Dashboard (Streamlit)
+
+Interactive dashboard with the pipeline outputs:
+
+```bash
+streamlit run dashboard.py
+# open http://localhost:8501
+```
+
+It pulls data from the latest run (`output_tlv.csv`, `monitoring.json`,
+`recall_by_decile.csv`) and from the MLflow history. Sections:
+
+- **KPIs**: PSI, AUC val, recall, champion model.
+- **Tab "Último run"**: distribution of execution groups, score and
+  average amount per group, top-N customers by TLV score (slider).
+- **Tab "Histórico (MLflow)"**: evolution of AUC and PSI across runs,
+  full table of runs.
+- **Tab "Recall por decil"**: cumulative recall curve.
+
+The dashboard works even before the first pipeline run — it falls back
+to an informative message instead of crashing.
 
 ## Configuration (`config.yaml`)
 
@@ -148,6 +236,9 @@ global constant — every knob is here:
 | `postprocessing`         | `tlv_output`              | `data/postprocessing/output_tlv.csv` | Scored TLV table                             |
 | `postprocessing.replica` | `table`                   | `EC_OMNICANAL`                   | Replica file `modelo` value                      |
 | `postprocessing.replica` | `dir_{s3,athena,onpremise}` | `data/replica/...`             | Replica destinations                             |
+| `mlflow`                 | `enabled`                 | `true`                           | Toggle MLflow tracking on/off                    |
+| `mlflow`                 | `experiment_name`         | `cu_venta`                       | MLflow experiment name                           |
+| `mlflow`                 | `tracking_uri`            | `sqlite:///mlflow.db`            | Tracking backend (SQLite file)                   |
 
 ## Stages
 
@@ -236,6 +327,25 @@ The same file is dropped into three destinations (configurable):
 - `data/replica/s3/`
 - `data/replica/athena/`
 - `data/replica/onpremise/`
+
+## Experiment tracking (MLflow)
+
+Each invocation of `main.py` creates a single MLflow run named `pipeline`
+in the experiment `cu_venta`. Logged content:
+
+- **Params**: `input_path`, `validation_codmes`, `test_size`,
+  `internal_val_size`, `cv_folds`, `optuna_trials`, `max_rounds`,
+  `early_stopping_rounds`, `decay_max_pct`, `random_state`, plus the
+  tuned hyperparameters of the champion model (prefixed `champion_*`).
+- **Metrics**: `cols_dropped_nan`, `champion_{auc_train,auc_test,cv_auc,
+  decay_pct,best_iteration}`, and the monitoring metrics (`val_psi`,
+  `val_auc`, `val_recall_0.5`).
+- **Tags**: `champion=<lgbm|xgb|catb|none>`.
+- **Artifacts**: the champion model (`mlflow.sklearn.log_model`),
+  `monitoring.json`, `recall_by_decile.csv`, `output_tlv.csv`.
+
+Metadata lives in `mlflow.db` (SQLite); artifacts live in
+`mlruns/<exp_id>/<run_id>/artifacts/`. Both are auto-created on first run.
 
 ## Logging
 
