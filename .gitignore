@@ -206,6 +206,9 @@ tempCodeRunnerFile.py
 # Ruff stuff:
 .ruff_cache/
 
+# VS Code
+.DS_Store
+
 # PyPI configuration file
 .pypirc
 
@@ -224,3 +227,11 @@ catboost_info/
 models/
 
 preprocess_data/
+replica/
+monitoring/
+postprocessing/
+
+# MLflow
+mlflow.db
+mlruns/
+mlartifacts/
